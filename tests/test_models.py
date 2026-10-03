@@ -4006,6 +4006,27 @@ class TestModels(unittest.TestCase):
                 "moe_intermediate_size": 128,
             },
             {
+                "model_type": "kolibri1",
+                "vocab_size": 1000,
+                "hidden_size": 128,
+                "num_hidden_layers": 5,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 2,
+                "head_dim": 32,
+                "layer_types": [
+                    "sliding_attention",
+                    "sliding_attention",
+                    "sliding_attention",
+                    "sliding_attention",
+                    "full_attention",
+                ],
+                "num_experts": 8,
+                "num_experts_per_tok": 2,
+                "moe_intermediate_size": 64,
+                "shared_expert_intermediate_size": 64,
+                "sliding_window": 4,
+            },
+            {
                 "model_type": "deepseek_v32",
                 "vocab_size": 1024,
                 "hidden_size": 128,
@@ -4202,6 +4223,36 @@ class TestModels(unittest.TestCase):
                     config["vocab_size"],
                     config["num_hidden_layers"],
                 )
+
+    def test_kolibri1_routing(self):
+        from types import SimpleNamespace
+
+        from mlx_lm.models.kolibri1 import Kolibri1MoE
+
+        E = 8
+        block = Kolibri1MoE(
+            SimpleNamespace(
+                hidden_size=E,
+                num_experts=E,
+                num_experts_per_tok=2,
+                moe_intermediate_size=4,
+                shared_expert_intermediate_size=4,
+                norm_topk_prob=False,
+            )
+        )
+        # Each expert returns its one-hot row, so the output is the routing weight.
+        block.experts = lambda x, inds: mx.eye(E)[inds]
+        block.shared_experts = lambda x: mx.zeros_like(x)
+        block.gate.weight = mx.eye(E)
+        block.expert_bias = mx.array([0.0] * 7 + [10.0])
+        logits = mx.array([[[3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0, -4.0]]])
+
+        out = block(logits)[0, 0]
+
+        expected = mx.zeros(E)
+        expected[0] = mx.sigmoid(mx.array(3.0))
+        expected[7] = mx.sigmoid(mx.array(-4.0))
+        self.assertTrue(mx.allclose(out, expected, atol=1e-6))
 
     def test_minimax_m3_vl(self):
         from mlx_lm.generate import _merge_caches
